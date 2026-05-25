@@ -42,13 +42,25 @@ COPILOT_PROJECT_DIR_FROM_JSON=$(echo "$INPUT" | jq -r '.workspace_dir // .worksp
 COPILOT_SESSION_ID_FROM_JSON=$(echo "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null)
 
 SESSION_ID="${GEMINI_SESSION_ID:-${CLAUDE_SESSION_ID:-${COPILOT_SESSION_ID:-${COPILOT_SESSION_ID_FROM_JSON:-unknown}}}}"
-PROJECT_DIR="${GEMINI_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-${COPILOT_PROJECT_DIR:-${COPILOT_PROJECT_DIR_FROM_JSON:-$(pwd)}}}}"
+# Resolve project dir from the git root so that worktree paths collapse to
+# the canonical repository root (issue #92). Fallbacks: env vars from each
+# CLI, JSON-embedded project dir from Copilot, then $PWD as last resort.
+_GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+PROJECT_DIR="${GEMINI_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-${COPILOT_PROJECT_DIR:-${COPILOT_PROJECT_DIR_FROM_JSON:-${_GIT_ROOT:-$(pwd)}}}}}"
 PROJECT_NAME=$(basename "$PROJECT_DIR")
 TODAY=$(date +%Y-%m-%d)
 ROOM_ID="${PROJECT_NAME}-${TODAY}-${SESSION_ID:0:8}"
 
 # --- Detect event type from input fields ---
 HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty' 2>/dev/null)
+
+# Skip high-frequency PostToolUse events — they generate too many writes
+# for parallel agent sessions. Only Stop and SessionEnd carry session-level
+# value (issue #91).
+if [ "$HOOK_EVENT" = "PostToolUse" ]; then
+  exit 0
+fi
+
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 TOOL_INPUT=$(echo "$INPUT" | jq -r '.tool_input // empty' 2>/dev/null)
 
@@ -107,11 +119,23 @@ if [ -n "$CONTENT" ]; then
   TRANSCRIPT_ROOM="$ROOM_ID"
   TRANSCRIPT_AGENT="transcript-hook"
 
+  # Capture Python stderr to a dedicated file so import/runtime errors are
+  # visible instead of being swallowed into $STATUS (issue #93). The
+  # `timeout 5` wrapper kills a hung Python after 5 seconds so a MemPalace
+  # lock cannot stall the calling CLI (issues #90, #94). `|| true` keeps
+  # `set -e` from aborting on Python exit codes — STATUS_RC carries the
+  # actual outcome.
+  _HOOK_ERR="${TMPDIR:-/tmp}/mempalace-hook-$$.err"
+  trap 'rm -f "$_HOOK_ERR"' EXIT
+
+  # Temporarily disable `set -e` so a non-zero Python exit does not abort
+  # the hook before we can log the failure.
+  set +e
   STATUS=$(
     TRANSCRIPT_CONTENT="$TRANSCRIPT_CONTENT" \
     TRANSCRIPT_ROOM="$TRANSCRIPT_ROOM" \
     TRANSCRIPT_AGENT="$TRANSCRIPT_AGENT" \
-    "$MEMPALACE_PYTHON" - 2>&1 <<'PYEOF'
+    timeout 5 "$MEMPALACE_PYTHON" - 2>"$_HOOK_ERR" <<'PYEOF'
 import os, sys
 try:
     from mempalace.mcp_server import tool_add_drawer
@@ -132,10 +156,14 @@ print("OK")
 PYEOF
   )
   STATUS_RC=$?
+  set -e
   if [ "$STATUS_RC" -eq 0 ]; then
     echo "mempalace-transcript: persisted ${ENTRY_TYPE} to transcripts/${ROOM_ID}" >&2
   else
     echo "mempalace-transcript: FAILED to persist ${ENTRY_TYPE} (rc=$STATUS_RC): $STATUS" >&2
+    if [ -s "$_HOOK_ERR" ]; then
+      cat "$_HOOK_ERR" >&2
+    fi
   fi
 fi
 
