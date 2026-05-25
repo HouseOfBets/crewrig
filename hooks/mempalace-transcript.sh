@@ -122,9 +122,9 @@ if [ -n "$CONTENT" ]; then
   # Capture Python stderr to a dedicated file so import/runtime errors are
   # visible instead of being swallowed into $STATUS (issue #93). The
   # `timeout 5` wrapper kills a hung Python after 5 seconds so a MemPalace
-  # lock cannot stall the calling CLI (issues #90, #94). `|| true` keeps
-  # `set -e` from aborting on Python exit codes — STATUS_RC carries the
-  # actual outcome.
+  # lock cannot stall the calling CLI (issues #90, #94). `set +e`/`set -e`
+  # brackets the call so a non-zero Python exit does not abort the hook —
+  # STATUS_RC carries the actual outcome.
   _HOOK_ERR="${TMPDIR:-/tmp}/mempalace-hook-$$.err"
   trap 'rm -f "$_HOOK_ERR"' EXIT
 
