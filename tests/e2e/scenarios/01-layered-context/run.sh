@@ -100,10 +100,11 @@ mkdir -p "$host_out"
 container_name="crewrig-e2e-01-${E2E_CLI}-${E2E_RUN_ID:-adhoc}"
 
 # Copilot writes session-state/ into its config dir at runtime; mount rw
-# so those writes succeed. Claude/Gemini do not need write access.
+# so those writes succeed. Gemini writes projects.json at runtime; same
+# requirement. Claude does not write to its config dir.
 case "$E2E_CLI" in
-  copilot) rules_mount_mode="rw" ;;
-  *)       rules_mount_mode="ro" ;;
+  copilot|gemini) rules_mount_mode="rw" ;;
+  *)              rules_mount_mode="ro" ;;
 esac
 
 docker_argv=(

@@ -39,7 +39,14 @@ env_keys     = ["ANTHROPIC_API_KEY"]
 image        = "crewrig/e2e-gemini:latest"
 command      = ["gemini"]
 command_args = []
-mounts       = ["${CREWRIG_E2E_HOME}/gemini:/home/agent/.gemini:ro"]
+mounts       = [
+  "${CREWRIG_E2E_HOME}/gemini:/home/agent/.gemini:ro",
+  # File-over-dir override: replaces settings.json inside the :ro dir mount
+  # with an empty object so gemini -p falls back to GEMINI_API_KEY from env
+  # instead of the oauth-personal auth type that blocks headless containers.
+  # Created by `task e2e:auth:gemini` (auth-gemini.sh). See issue #136.
+  "${CREWRIG_E2E_HOME}/gemini/settings-headless.json:/home/agent/.gemini/settings.json:ro"
+]
 env_keys     = ["GEMINI_API_KEY"]
 
 [cli.copilot]

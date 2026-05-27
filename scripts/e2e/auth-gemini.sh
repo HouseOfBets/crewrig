@@ -58,5 +58,17 @@ if grep -qE 'GEMINI_API_KEY|GOOGLE_API_KEY' "${DIR}/settings.json" 2>/dev/null \
   e2e_die "[$CLI] API-key material detected in $DIR — API keys MUST be passed via the host shell env at scenario run time, never persisted. Delete the offending file and re-run."
 fi
 
+# Write a headless-compatible settings stub for e2e scenario runs.
+# settings.json with selectedType=oauth-personal causes `gemini -p` to open a
+# persistent streaming connection to Google that never closes, blocking the
+# container indefinitely. An empty object ({}) causes the CLI to fall back to
+# GEMINI_API_KEY from the environment, which the e2e runner forwards via
+# defaults.toml env_keys. The scenario runner mounts this file over the real
+# settings.json using a Docker file-over-dir bind mount so the host copy is
+# never modified. See issue #136 for the root-cause analysis.
+HEADLESS_SETTINGS="${DIR}/settings-headless.json"
+printf '{}\n' > "$HEADLESS_SETTINGS"
+e2e_info "[$CLI] Wrote ${HEADLESS_SETTINGS} (mounted over settings.json at scenario run time; GEMINI_API_KEY must be set in the shell)."
+
 e2e_info "[$CLI] Authenticated. Credentials persisted under $DIR."
 e2e_info "[$CLI] Next: run scenarios with the dir mounted read-only (issue #78)."
