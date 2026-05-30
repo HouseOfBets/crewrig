@@ -77,7 +77,7 @@ The string is ugly. We accept the ugliness; it is bounded and self-documenting i
 | Concern | Rule |
 |---|---|
 | Dir mode | `auth-gemini.sh` ends with `chmod 700 "$DIR"` after capture |
-| File modes | Preserved by `cp -R` (host already enforces `0600` on `oauth_creds.json` / `gemini-credentials.json` / `settings.json` per §2.1) |
+| File modes | Normalised by `auth-gemini.sh` (`find … -type f -exec chmod 600`, `find … -type d -exec chmod 700`) after the denylist; container-side bootstrap uses `cp -a` (not `cp -R`) so modes survive the copy. Earlier wording claimed `cp -R` preserved modes — that claim was incorrect (security review on issue #148, Med-3 — see https://github.com/crewrig/crewrig/issues/148#issuecomment-4583250693). |
 | `.gitignore` | **Not needed.** `~/.crewrig-e2e/` lives outside the repo root by design (per `e2e_cli_dir` in `auth-common.sh`). Defense-in-depth gitignore line is unnecessary noise. |
 | README warning | Add a short note to the script's existing "Authenticated. Credentials persisted under $DIR." line: `"Bundle contains a long-lived OAuth refresh token. Treat ${DIR} like ~/.ssh — host-only, never sync to cloud storage, never ship in container images."` |
 

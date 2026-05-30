@@ -42,9 +42,15 @@ image        = "crewrig/e2e-gemini:latest"
 # perform its atomic-write to projects.json (see issue #147 §5 and the
 # #148 design note Decision 2). "$@" forwards CLI arguments (including
 # -p and the prompt); the trailing "sh" sets argv[0] for bash -c.
+#
+# `set -e` makes mkdir/cp fatal (Low-1 from #148 security review — closes
+# the precedence trap where `|| true` swallowed cp failures). `cp -a`
+# preserves modes so oauth_creds.json stays 0600 (Med-3). `chown` keeps a
+# scoped tolerance for Docker-Desktop-macOS where it is expected to fail
+# with EPERM; other errors surface to stderr for diagnosis (Low-3).
 command      = [
   "bash", "-c",
-  "mkdir -p /home/agent/.gemini && cp -R /run/gemini-creds/. /home/agent/.gemini/ && chown -R agent:agent /home/agent/.gemini 2>/dev/null || true; exec gemini \"$@\"",
+  "set -e; mkdir -p /home/agent/.gemini; cp -a /run/gemini-creds/. /home/agent/.gemini/; chown_err=$(chown -R agent:agent /home/agent/.gemini 2>&1 >/dev/null) || case \"$chown_err\" in *\"Operation not permitted\"*|*\"not super-user\"*|*\"not permitted\"*) : ;; *) printf 'chown warning: %s\\n' \"$chown_err\" >&2 ;; esac; exec gemini \"$@\"",
   "sh"
 ]
 command_args = []

@@ -38,6 +38,13 @@ docker run --rm -it \
   gemini \
   || e2e_die "[$CLI] interactive container exited non-zero. Re-run after resolving the error above."
 
+# Close the world-writable window opened by e2e_chown_bootstrap (Med-1 from
+# the #148 security review). The shared helper sets $DIR to a+rwx so the
+# container's `agent` UID can write during the interactive login; tightening
+# immediately after the container exits — BEFORE the denylist, the API-key
+# grep, and the post-flight check — minimises shared-dev-box exposure.
+chmod 700 "$DIR"
+
 # Post-login: the sandbox mount above means the in-container CLI wrote
 # directly into $DIR. Apply the denylist (issue #148, design note
 # Decision 1 — revised post-developer-feedback at design commit 90c8b87)
@@ -54,6 +61,13 @@ rm -rf \
   "${DIR}/antigravity" \
   "${DIR}/tmp"
 find "$DIR" -maxdepth 2 -type f \( -name '*.bak' -o -name '*.ori' -o -name '*.orig' \) -delete
+
+# Normalise modes inside $DIR (Med-2 from the #148 security review). The
+# 0600 invariant on oauth_creds.json was previously implicit on whatever
+# the Gemini CLI happened to write; assert it. Belt-and-braces against a
+# future CLI release loosening file modes.
+find "$DIR" -type d -exec chmod 700 {} +
+find "$DIR" -type f -exec chmod 600 {} +
 
 # Post-flight: oauth_creds.json is the load-bearing file; settings.json holds
 # the selected auth type and is written on first menu choice. Both must be
@@ -72,17 +86,14 @@ fi
 
 # Refuse to leave API-key material on disk (Decision 7 of ADR 0002). With the
 # broader capture we walk the full $DIR rather than the two original files —
-# any new Gemini CLI artifact may carry the key. One-shot interactive script;
-# perf is irrelevant (design note Concerns #2).
-if grep -rlE 'GEMINI_API_KEY|GOOGLE_API_KEY' "$DIR" 2>/dev/null | grep -q .; then
+# any new Gemini CLI artifact may carry the key. The assignment-shape
+# anchor (`=` + ≥16-char value, Low-2 from the #148 security review)
+# filters prose mentions inside transcripts / acknowledgments that merely
+# name the env var without containing an actual key value.
+if grep -rlE '(GEMINI|GOOGLE)_API_KEY[[:space:]]*=[[:space:]]*[A-Za-z0-9_-]{16,}' "$DIR" 2>/dev/null | grep -q .; then
   e2e_die "[$CLI] API-key material detected under $DIR — API keys MUST be passed via the host shell env at scenario run time, never persisted. Delete the offending file(s) and re-run."
 fi
 
-# Lock the bundle down: the captured tree contains a long-lived OAuth refresh
-# token. 0700 on the parent dir is the minimum posture on a shared dev box
-# (#147 §8 observed the parent at drwxrwxrwx before this change).
-chmod 700 "$DIR"
-
-e2e_info "[$CLI] Authenticated. Credentials persisted under $DIR (mode 0700)."
+e2e_info "[$CLI] Authenticated. Credentials persisted under $DIR (mode 0700; files 0600)."
 e2e_info "[$CLI] Bundle contains a long-lived OAuth refresh token. Treat ${DIR} like ~/.ssh — host-only, never sync to cloud storage, never ship in container images."
 e2e_info "[$CLI] Next: run scenarios with the dir mounted read-only at /run/gemini-creds (issue #78)."
