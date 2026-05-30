@@ -32,28 +32,18 @@ e2e_chown_bootstrap "$CLI" "$IMAGE"
 e2e_info "[$CLI] Launching Gemini CLI. In the menu, pick \"Login with Google\" and complete the browser flow."
 e2e_info "[$CLI] Once you see the welcome prompt, type \"/quit\" (or Ctrl-D) to exit."
 
-HOST_GEMINI="${HOME}/.gemini"
-
 docker run --rm -it \
-  -v "${HOST_GEMINI}:/home/agent/.${CLI}" \
+  -v "${DIR}:/home/agent/.${CLI}" \
   "$IMAGE" \
   gemini \
   || e2e_die "[$CLI] interactive container exited non-zero. Re-run after resolving the error above."
 
-# Post-login: capture the full ~/.gemini bundle into $DIR via a denylist copy.
-# Rationale (issue #148, design note Decision 1): #147 §6.1 #1 recommends
-# capturing every top-level artifact minus a small denylist. Hand-curated
-# allowlists silently miss files added by future Gemini CLI versions.
-if [ ! -d "$HOST_GEMINI" ]; then
-  e2e_die "[$CLI] Host ${HOST_GEMINI} does not exist after interactive container exit — login flow did not produce credentials."
-fi
-
-e2e_info "[$CLI] Capturing ${HOST_GEMINI}/ → ${DIR}/ (denylist applied post-copy)…"
-# cp -R copies directory contents into $DIR. Trailing /. on the source copies
-# the *contents* (matching rsync src/ semantics) rather than nesting under
-# $DIR/.gemini/. -p preserves mode bits — host 0600 on creds stays 0600.
-cp -Rp "${HOST_GEMINI}/." "${DIR}/"
-
+# Post-login: the sandbox mount above means the in-container CLI wrote
+# directly into $DIR. Apply the denylist (issue #148, design note
+# Decision 1 — revised post-developer-feedback at design commit 90c8b87)
+# to sweep up leftover noise from prior runs and ignore Bucket D
+# artifacts. Source is $DIR itself; no host ~/.gemini read.
+#
 # Denylist (Decision 1):
 #   antigravity-browser-profile/ — ~18k Chromium cache files (#147 §2)
 #   antigravity/                 — sibling browser profile
