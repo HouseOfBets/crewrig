@@ -40,3 +40,34 @@ empirically eliminated.
 Defect blocking a clean scenario-level measurement is reported to
 team-lead; once fixed, re-run will yield the runner-level wall-clock
 under Decision 7's measurement contract.
+
+---
+
+## Re-run at commit 047260f (Decision 5 Revision 2)
+
+The scenario-script double-mount was fixed (case-split skips the
+redundant rules mount for gemini). A NEW mount line was added to
+`tests/e2e/defaults.toml [cli.gemini].mounts`:
+
+  "${HOME}/.gemini:/run/gemini-rules:ro"
+
+The runner's token map (`tests/e2e/run.sh:178–179`) was extended to
+interpolate `${HOME}` in addition to `${CREWRIG_E2E_HOME}`. However,
+the scenario script `tests/e2e/scenarios/01-layered-context/run.sh:75`
+carries its OWN local `expand_mount` that only handles
+`${CREWRIG_E2E_HOME}` — the `${HOME}` token is NOT interpolated when
+the scenario script processes mounts from the effective config.
+
+Docker rejects the literal `${HOME}/.gemini:/run/gemini-rules:ro` with:
+
+  docker: Error response from daemon: create ${HOME}/.gemini:
+  "${HOME}/.gemini" includes invalid characters for a local volume
+  name, only "[a-zA-Z0-9][a-zA-Z0-9_.-]" are allowed.
+
+Scenario-level wall-clock still unmeasurable; failure is immediate, not
+a hang. The 120 s timeout class remains empirically eliminated.
+
+Report dir: tests/e2e/reports/20260530T163700Z-7a03/gemini/01-layered-context/
+
+Defect reported to team-lead — same scenario-script file as the prior
+round, different forgotten edit.
