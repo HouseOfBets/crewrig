@@ -30,7 +30,7 @@ unset in Check 3; identical environment in all rows).
 
 ## Minimal load-bearing set (empirical, this image revision)
 
-```
+```text
 oauth_creds.json
 settings.json
 trustedFolders.json
