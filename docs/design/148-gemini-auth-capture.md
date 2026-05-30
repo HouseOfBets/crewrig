@@ -89,6 +89,17 @@ The string is ugly. We accept the ugliness; it is bounded and self-documenting i
 
 ## Decision 5 — `tests/e2e/defaults.toml` updates: TOML-only, runner contract preserved
 
+> **Revision 2 (post-tester-feedback).** Tester confirmed the 120 s hang class is gone (Check 3 passes in ~10.7 s without env injection). But `gemini/01-layered-context` still fails — for a defect *uncovered* rather than introduced by #148. The sandboxed login bundle (per Decision 1 revision) contains no `[0-6]0_*.md` layered-context rules; those live in the developer's `~/.gemini/` (deployed by `build-components.sh`). Pre-#148, the scenario's own `${rules_dir}:/home/agent/.gemini:ro` mount and `defaults.toml`'s `:ro` mount collapsed onto the same path, and Docker deduplicated — the rules reached the container via that conflation. Now the two mounts have distinct targets (`/run/gemini-creds` vs `/home/agent/.gemini`), `cp -a` aborts on the alias, and the absence of rules in the auth bundle becomes visible for the first time. #148 is enabling `gemini/01` rather than regressing it.
+>
+> The user has authorised **Option 1**: a second `:ro` mount carrying the host's `~/.gemini` at a distinct container path, plus a selective bootstrap copy of `[0-6]0_*.md` only. Runner (`tests/e2e/run.sh`) remains untouched; the #149 seam is preserved.
+>
+> Rulings on the four sub-concerns:
+>
+> 1. **Mount scope** → **broad** (`${HOME}/.gemini:/run/gemini-rules:ro`). The bootstrap glob is the actual filter; broadening the mount source decouples us from `build-components.sh`'s exact output layout and avoids brittle per-file bind mounts.
+> 2. **Beyond `[0-6]0_*.md`?** → **rule files only**, no directories. Scope check: scenario 03-skill-build runs `build-components.sh --target gemini` *inside* the container and generates the dirs there; scenarios 02/04 use a MemPalace sidecar, not local MCP config. No current scenario needs `extensions/`, `commands/`, `skills/`, `mcp/`, `policies/`, `hooks/` pre-staged. YAGNI — add later if a future scenario actually fails.
+> 3. **Privacy** → **trade-off accepted, documented**. The `:ro` surface widens (entire `~/.gemini` visible read-only inside the container at `/run/gemini-rules`), but the selective `cp -a /run/gemini-rules/[0-6]0_*.md` keeps personal artifacts out of `/home/agent/.gemini`. `gemini` itself never reads from `/run/gemini-rules/` — only the bootstrap does. Residual risk: a malicious MCP server inside the test container could `cat /run/gemini-rules/oauth_creds.json`. In the e2e harness running the developer's own trusted binaries, this is theoretical; the container is short-lived and the developer authored everything inside it. Flag in the bootstrap comment so future maintainers don't widen the bootstrap's read surface without re-evaluating.
+> 4. **CI portability** → **soft-skip with warning**. `cp -a … 2>/dev/null || :` swallows the empty-glob failure; an `echo` to stderr surfaces the condition. Hard-failing the bootstrap turns a missing-rules condition into a cryptic container error; soft-skip lets the scenario's own LLM-judge assertion produce the actually-informative failure. The CI-side contract: whoever provisions CI is responsible for deploying `~/.gemini/[0-6]0_*.md` via `build-components.sh` before invoking `task e2e:test`.
+
 **Choice.** Edit `defaults.toml [cli.gemini]` only. Do **not** touch `tests/e2e/run.sh` (lines 275–284 stay as-is for #149). Keep the full `env_keys` array (`GEMINI_API_KEY`, `GOOGLE_CLOUD_ACCESS_TOKEN`, `GOOGLE_GENAI_USE_GCA`) unchanged.
 
 Resulting `[cli.gemini]` block:
@@ -97,23 +108,34 @@ Resulting `[cli.gemini]` block:
 [cli.gemini]
 image        = "crewrig/e2e-gemini:latest"
 # Container-side bootstrap: copy the :ro credentials bundle into a writable
-# location owned by `agent`, then exec gemini. Lets ProjectRegistry.save()
-# perform its atomic-write to projects.json (see issue #147 §5).
+# location owned by `agent`, copy the host's 00–60 layered-context rules in
+# selectively from a second :ro mount, then exec gemini. Lets ProjectRegistry
+# .save() perform its atomic-write to projects.json (see issue #147 §5) and
+# surfaces the layered-context rules the scenario 01 LLM-judge asserts on.
+#
+# /run/gemini-rules is :ro-mounted from the developer's full ~/.gemini for
+# scope decoupling from build-components.sh's output layout. The bootstrap
+# copies ONLY [0-6]0_*.md from that mount — personal state never reaches
+# /home/agent/.gemini. Do NOT widen the bootstrap glob without re-evaluating
+# the privacy posture (design note Decision 5 Revision 2, concern 3).
 command      = [
   "bash", "-c",
-  "mkdir -p /home/agent/.gemini && cp -R /run/gemini-creds/. /home/agent/.gemini/ && chown -R agent:agent /home/agent/.gemini 2>/dev/null || true; exec gemini \"$@\"",
+  "set -e; mkdir -p /home/agent/.gemini && cp -a /run/gemini-creds/. /home/agent/.gemini/ && { cp -a /run/gemini-rules/[0-6]0_*.md /home/agent/.gemini/ 2>/dev/null || echo '[bootstrap] no layered-context rules found at /run/gemini-rules/ — gemini/01 will likely fail' >&2; } && chown -R agent:agent /home/agent/.gemini 2>/dev/null || true; exec gemini \"$@\"",
   "sh"
 ]
 command_args = []
-mounts       = ["${CREWRIG_E2E_HOME}/gemini:/run/gemini-creds:ro"]
+mounts       = [
+  "${CREWRIG_E2E_HOME}/gemini:/run/gemini-creds:ro",
+  "${HOME}/.gemini:/run/gemini-rules:ro"
+]
 env_keys     = ["GEMINI_API_KEY", "GOOGLE_CLOUD_ACCESS_TOKEN", "GOOGLE_GENAI_USE_GCA"]
 ```
 
-**Why.** #147 §4.2 Test D proved `GOOGLE_CLOUD_ACCESS_TOKEN` injection is **vestigial** but **harmless**. Removing it requires deleting the `run.sh` block (#149's job). Leaving it produces an env var Gemini ignores — zero runtime cost, preserves #149's independent landing. The contract this PR exposes to #149: "TOML mount path, command shape, and env_keys list are the contract surface; runner injection can be removed without touching them again." Verify by inspection: nothing in the new `command` reads `$GOOGLE_*` env vars, so adding/removing the env injection in `run.sh` cannot affect this TOML.
+**Why.** #147 §4.2 Test D proved `GOOGLE_CLOUD_ACCESS_TOKEN` injection is **vestigial** but **harmless** — removal stays in #149's scope. The second mount adds one TOML line and keeps the runner untouched, so the #149 seam (env_keys + mount path + command shape as the contract surface) is preserved. The bootstrap's `cp -a` (not `cp -R`) preserves modes, which matters for the creds bundle and matches Decision 4's posture.
 
-**Blast radius for developer.** One block rewrite in `defaults.toml`. The mount path changes from `/home/agent/.gemini` to `/run/gemini-creds` — this is a deliberate, observable rename so anyone debugging a failing run can `docker inspect` the container and immediately see "ah, the source is RO under `/run/gemini-creds`, the writable copy is the bootstrapped `/home/agent/.gemini`."
+**Blast radius for developer.** One block rewrite in `defaults.toml` (now two mount lines + a longer `command` string). The `${HOME}` token in the second mount line MUST be interpolated by the runner the same way `${CREWRIG_E2E_HOME}` is — verify `tests/e2e/lib/toml_merge.sh` (or the equivalent path-interpolation pass in the runner) honors plain `${HOME}` substitution. If not, the developer must use the absolute path resolution already in place (the runner's `EFFECTIVE_JSON` materialisation step) and may need to add `${HOME}` to the recognised token list — a one-line change in the interpolation map, not a `run.sh` semantic change (still within Decision 5's "runner contract preserved" envelope; document it as a string-table edit, not a logic edit).
 
-Wrap the `command` array with `# noqa`-style discipline only if the linter complains; the readable form is to keep the bash on a single line per `bash -c` convention.
+**Additional file change — scenario script.** `tests/e2e/scenarios/01-layered-context/run.sh` currently mounts `${rules_dir}:/home/agent/.gemini:ro` for every CLI. Add a case-split: skip this mount for `gemini` (where the rules now arrive via the defaults.toml bootstrap), keep it for `claude` and `copilot` (where the scenario-level mount remains the rules delivery path). This is the minimal scenario-side change needed to unblock the bootstrap; broader unification of rules delivery across CLIs is out of scope.
 
 ---
 
@@ -148,20 +170,17 @@ The tester's brief beyond `task e2e:test passes`:
 
 ## Handoff to developer — concrete edit checklist
 
-1. **`scripts/e2e/auth-gemini.sh`** — replace the `docker run` block's post-flight section:
-   - Replace the curated `[ -f ... ]` check with a `cp -R "$HOME/.gemini/." "$DIR/"` denylist using `--exclude` (or post-`cp` `rm -rf` of `antigravity-browser-profile`, `antigravity`, `tmp`, `*.bak`, `*.ori`, `*.orig` under `$DIR`).
-   - Keep the post-flight existence check for `oauth_creds.json` and `settings.json` only.
-   - Delete the `HEADLESS_SETTINGS=...; printf '{}\n' > "$HEADLESS_SETTINGS"` block + its `e2e_info` line.
-   - Append `chmod 700 "$DIR"` after the existence check passes.
-   - Extend the final `e2e_info` to include the "long-lived OAuth refresh token — treat like ~/.ssh" warning.
-2. **`tests/e2e/defaults.toml`** — rewrite `[cli.gemini]` block per Decision 5; preserve `env_keys` unchanged.
-3. **`docs/cli-matrix.md`** — update Row #21 and Row #22 Gemini cells per Decision 6.
-4. **Do NOT touch:** `tests/e2e/run.sh`, `scripts/e2e/lib/auth-common.sh` (specifically `e2e_gemini_refresh_access_token`), `tests/e2e/lib/test-token-refresh.sh`. All owned by #149.
-5. **Verify locally before push:**
+1. **`scripts/e2e/auth-gemini.sh`** — already implemented in 79b815a + security follow-ups; per Decision 1 revision, the only remaining edits are: revert mount to `-v "${DIR}:/home/agent/.${CLI}"`, drop the `HOST_GEMINI` variable and the `cp -Rp "${HOST_GEMINI}/." "${DIR}/"` line, drop the host-precondition check. Denylist cleanup, broadened grep, `chmod 700`, mode normalisation, and warning text all stay.
+2. **`tests/e2e/defaults.toml`** — rewrite `[cli.gemini]` block per Decision 5 Revision 2 (TWO mount lines: `/run/gemini-creds` from `${CREWRIG_E2E_HOME}/gemini`, `/run/gemini-rules` from `${HOME}/.gemini`; extended bootstrap with selective `[0-6]0_*.md` copy and soft-skip stderr warning). Preserve `env_keys` unchanged.
+3. **`tests/e2e/scenarios/01-layered-context/run.sh`** — add a case-split that skips the `${rules_dir}:/home/agent/.gemini:ro` mount when the target CLI is `gemini`. Claude and Copilot keep the existing mount.
+4. **Verify `${HOME}` interpolation in the runner's TOML path-substitution pass.** If `${HOME}` is not already in the recognised token map, add it (one-line edit in the token list — NOT a runner logic change; the runner contract — env_keys + mount path + command shape — is unchanged). If it IS already recognised, no edit needed.
+5. **`docs/cli-matrix.md`** — update Row #21 and Row #22 Gemini cells per Decision 6, and extend Row #22 to mention the dual `:ro` mount (`/run/gemini-creds` for creds, `/run/gemini-rules` for layered-context rules).
+6. **Do NOT touch:** `tests/e2e/run.sh`, `scripts/e2e/lib/auth-common.sh` (specifically `e2e_gemini_refresh_access_token`), `tests/e2e/lib/test-token-refresh.sh`. All owned by #149.
+7. **Verify locally before push:**
    - `bash scripts/check-skill-versions.sh` (no community-config edits expected; should be a no-op)
    - `task e2e:auth:gemini` — re-run the interactive login; confirm the new files appear under `~/.crewrig-e2e/gemini/` and the dir is `0700`.
-   - `task e2e:test -- --cli gemini` — single-digit-seconds completion expected.
-6. **Commit message:** `🔐 Capture full ~/.gemini bundle and copy on boot (issue #148)` (Gitmoji per AGENTS.md).
+   - `task e2e:test -- --cli gemini` — single-digit-seconds completion expected; `gemini/01-layered-context` should now pass.
+8. **Commit message** for the follow-up: `🔐 Add layered-context rules mount + selective bootstrap copy (issue #148)` (Gitmoji per AGENTS.md).
 
 ---
 
@@ -169,3 +188,4 @@ The tester's brief beyond `task e2e:test passes`:
 
 - **`history/` privacy** is resolved by the Decision 1 revision: the sandboxed login produces no prior history, so nothing to leak. If the tester (Decision 7 #1) finds the e2e scenario does write a `history/` entry at runtime, that entry is per-run and per-scenario, not the developer's personal transcript — no action needed.
 - **API-key grep** has been broadened to walk the full `$DIR` (developer's implementation `grep -rlE ... "$DIR"` is correct). Keep as-is.
+- **`${HOME}` token in TOML mount strings.** If the runner's path-interpolation map does not currently recognise `${HOME}`, adding it is a string-table edit (not a `run.sh` logic change). If for some reason this is judged a `run.sh` modification proper and therefore in #149's territory, the alternative is to resolve the host path at scenario-launch time and pass it via an env-var that the TOML already references. Flag to developer; rule is "smallest edit that preserves the #149 seam wins".
