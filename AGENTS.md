@@ -290,6 +290,17 @@ env var injection, wrapper script) — that path MUST be implemented in
 the current PR. Documenting a viable path and then declining to use
 it is a parity violation, not a deferral.
 
+**Protocol-only exemption.** When the only file touched on the trigger
+surface is a top-level entry-point file (`AGENTS.md`, `CLAUDE.md`,
+`GEMINI.md`) AND the diff adds purely lifecycle / process documentation
+with no CLI-specific behaviour (no new path, command, hook, or
+configuration unique to one CLI), the obligation to update
+`docs/cli-matrix.md` does NOT apply. This codifies the precedent set by
+PRs #181 (Spec-PR workflow) and #183 (Plan review protocol) — both
+AGENTS.md-only, both pure lifecycle-protocol additions. The exemption
+SHALL NOT extend to changes that introduce or modify CLI-specific
+behaviour even when delivered exclusively through an entry-point file.
+
 **Symmetric-script rule.** When adding a new CLI target, every script
 under `scripts/` that already has a target for an existing CLI MUST
 gain a target for the new CLI in the **same PR** that introduces the
@@ -666,6 +677,61 @@ Rules:
 The mode-driven engine — argument parsing, gate enforcement, user
 notification surface — lands in #173. This section states the
 contract.
+
+## Plan review protocol
+
+The PLAN stage of the lifecycle (per
+[ADR-0010](docs/adr/0010-spec-plan-review-lifecycle.md) →
+*Stage definitions → PLAN*) emits exactly one artefact: a Markdown
+comment posted on the logbook issue. The protocol below operationalises
+who authors that comment, who reviews it, what shape the review takes,
+and how revisions chain. The format of the plan comment itself —
+header conventions, mandatory sections, optional sections, finding tag
+schema — lives in [`docs/plan-format.md`](docs/plan-format.md) and is
+mandated by [`specs/0004-plan-format-and-review.md`](specs/0004-plan-format-and-review.md).
+This section SHALL NOT duplicate that schema; consult the format
+document for any field-level question.
+
+**Authoring rule.** The plan SHALL be authored by the existing
+`architect` role on the team (per *Agent Team Protocol → Standard
+Team Templates*); no new specialist role is introduced. The same
+`architect` invocation that runs the PLAN stage owns the comment.
+
+**Review rule.** The plan SHALL be reviewed by a **second
+`architect`** spawned cold — no authoring context, no prior session
+state — to preserve independence. The reviewer posts the review as a
+follow-up comment on the same logbook issue. The review header and
+verdict line follow `docs/plan-format.md` → *Header conventions*.
+When the orchestrator and the reviewer share the same GitHub
+identity, the shared-identity workaround from *Standard Team
+Templates → Template 1* applies (post the verdict as a regular
+comment).
+
+**Finding class taxonomy.** Every plan-review finding SHALL carry
+exactly one `class:` field whose value drives the loop target:
+
+- `class: tech` — DEV-stage fix (e.g. a step names the wrong file
+  path or omits a required edit).
+- `class: arch` — PLAN-stage rework (e.g. the approach is unsound;
+  the blast radius missed a downstream consumer).
+- `class: spec` — SPECS-stage rework (e.g. a requirement is
+  ambiguous; the spec admits the plan but the plan reveals the WHAT
+  is under-specified).
+
+The full routing matrix — re-spawn composition, delta-spec impact,
+termination — lives in *Retroactive review loop* below; this list
+states the taxonomy, not the routing.
+
+**REQUEST CHANGES blocks DEV.** A plan-review verdict of `### Verdict:
+REQUEST CHANGES` SHALL block the DEV stage from starting until a
+revised plan is posted and re-reviewed cold.
+
+**Append-only revisions.** Validated plan comments are immutable: a
+revised plan SHALL be posted as a **new comment** carrying the
+revision header defined in `docs/plan-format.md` (citing the
+revision trigger). Silent edits or deletions of a validated plan
+comment break the retroactive review loop's audit trail and are
+prohibited.
 
 ## Retroactive review loop
 
