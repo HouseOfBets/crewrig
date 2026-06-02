@@ -71,6 +71,25 @@ jobs:
       - name: Lint Markdown files
         run: markdownlint "**/*.md" --ignore node_modules --ignore extension-skeleton --ignore communication
 
+  lint-specs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Task
+        run: sudo sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+      - name: Lint specs
+        run: task spec:lint
+
   test-harness-curate:
     runs-on: ubuntu-latest
     steps:

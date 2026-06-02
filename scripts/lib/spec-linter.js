@@ -1,0 +1,231 @@
+const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
+const yaml = require('js-yaml');
+const semver = require('semver');
+
+const STATUS_ENUM = ['draft', 'approved', 'implemented', 'archived', 'superseded'];
+const COMPLEXITY_ENUM = ['trivial', 'small', 'standard', 'large'];
+const INTERACTION_MODE_ENUM = ['FULL', 'INTERMEDIATE', 'MINIMAL', 'AUTO'];
+
+const ORIGINAL_HEADINGS = ['## Intent', '## Requirements', '## Scenarios', '## Out of scope', '## Open questions'];
+const DELTA_HEADINGS = ['## ADDED', '## MODIFIED', '## REMOVED'];
+
+function globSpecs(targetPath) {
+    const result = [];
+    if (fs.existsSync(targetPath)) {
+        const stat = fs.statSync(targetPath);
+        if (stat.isFile()) {
+            if (targetPath.endsWith('.md')) {
+                result.push(targetPath);
+            }
+        } else if (stat.isDirectory()) {
+            const files = fs.readdirSync(targetPath, { withFileTypes: true });
+            for (const file of files) {
+                const fullPath = path.join(targetPath, file.name);
+                if (file.isDirectory()) {
+                    result.push(...globSpecs(fullPath));
+                } else if (file.name.endsWith('.md') && file.name !== '_template.md' && file.name !== 'README.md') {
+                    result.push(fullPath);
+                }
+            }
+        }
+    } else {
+        // It might be a glob or exact path. Let's just return it and let markdownlint fail if missing.
+        // Actually, if it's explicitly passed and doesn't exist, we'll try treating it as a glob.
+        // For simplicity, we just use Node's simple glob. 
+        // We'll let bash globbing expand process.argv.
+    }
+    return result;
+}
+
+function lintFile(filePath) {
+    let hasErrors = false;
+    const errors = [];
+
+    const reportError = (msg) => {
+        errors.push(msg);
+        hasErrors = true;
+    };
+
+    const content = fs.readFileSync(filePath, 'utf8');
+    const basename = path.basename(filePath);
+
+    if (basename === '_template.md' || basename === 'README.md') {
+        return { hasErrors, errors };
+    }
+
+    const isDelta = basename.includes('.delta-');
+
+    let expectedId = '';
+    let expectedSlug = '';
+    const match = basename.match(/^(\d{4})-([a-z0-9\-]+?)(?:\.delta-\d+)?\.md$/);
+    if (!match) {
+        reportError(`Filename does not match <NNNN>-<kebab-slug>.md or <NNNN>-<kebab-slug>.delta-<NN>.md`);
+    } else {
+        expectedId = match[1];
+        expectedSlug = match[2];
+    }
+
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) {
+        reportError(`Missing YAML frontmatter block`);
+        return { hasErrors, errors };
+    }
+
+    let fm;
+    try {
+        fm = yaml.load(fmMatch[1]);
+    } catch (e) {
+        reportError(`Failed to parse YAML frontmatter: ${e.message}`);
+        return { hasErrors, errors };
+    }
+
+    if (!fm) {
+        reportError(`Frontmatter is empty`);
+        return { hasErrors, errors };
+    }
+
+    const mandatoryFields = ['id', 'slug', 'status', 'complexity', 'version', 'related-issue'];
+    for (const field of mandatoryFields) {
+        if (!(field in fm) || fm[field] === null || fm[field] === undefined) {
+            reportError(`Missing mandatory frontmatter field: '${field}'`);
+        }
+    }
+
+    if (fm.id !== undefined) {
+        const fmIdStr = typeof fm.id === 'string' ? fm.id : fm.id.toString().padStart(4, '0');
+        if (fmIdStr !== expectedId) {
+            reportError(`Frontmatter 'id' ("${fmIdStr}") does not match filename prefix ("${expectedId}")`);
+        }
+    }
+    if (fm.slug !== undefined && fm.slug !== expectedSlug) {
+        reportError(`Frontmatter 'slug' ("${fm.slug}") does not match filename slug ("${expectedSlug}")`);
+    }
+
+    if (fm.status && !STATUS_ENUM.includes(fm.status)) {
+        reportError(`Invalid 'status' ("${fm.status}"). Allowed: ${STATUS_ENUM.join(', ')}`);
+    }
+    if (fm.complexity && !COMPLEXITY_ENUM.includes(fm.complexity)) {
+        reportError(`Invalid 'complexity' ("${fm.complexity}"). Allowed: ${COMPLEXITY_ENUM.join(', ')}`);
+    }
+
+    if (fm.status && fm.status !== 'draft') {
+        if (!('interaction-mode' in fm) || fm['interaction-mode'] === null) {
+            reportError(`'interaction-mode' MUST be present if status is not 'draft'`);
+        }
+    }
+    if (fm['interaction-mode'] && !INTERACTION_MODE_ENUM.includes(fm['interaction-mode'])) {
+        reportError(`Invalid 'interaction-mode' ("${fm['interaction-mode']}"). Allowed: ${INTERACTION_MODE_ENUM.join(', ')}`);
+    }
+
+    if (fm.version && !semver.valid(fm.version.toString())) {
+        reportError(`Invalid 'version' ("${fm.version}"). Must be valid SemVer.`);
+    }
+
+    if ('related-issue' in fm && !Number.isInteger(fm['related-issue'])) {
+        reportError(`'related-issue' MUST be an integer.`);
+    }
+
+    if ('max-iterations' in fm && fm['max-iterations'] !== null) {
+        if (!Number.isInteger(fm['max-iterations'])) {
+            reportError(`'max-iterations' MUST be an integer.`);
+        } else if (fm['max-iterations'] < 1 || fm['max-iterations'] > 20) {
+            reportError(`'max-iterations' MUST be bounded between 1 and 20 (inclusive).`);
+        }
+    }
+
+    if (fm.status === 'superseded') {
+        if (!('superseded-by' in fm) || !fm['superseded-by']) {
+            reportError(`'superseded-by' is REQUIRED when status is 'superseded'.`);
+        }
+    } else {
+        if ('superseded-by' in fm && fm['superseded-by'] !== null) {
+            reportError(`'superseded-by' is PROHIBITED when status is not 'superseded'.`);
+        }
+    }
+
+    const lines = content.split('\n');
+    const h2Headings = [];
+    let inCodeBlock = false;
+    for (const line of lines) {
+        if (line.trim().startsWith('```')) {
+            inCodeBlock = !inCodeBlock;
+            continue;
+        }
+        if (!inCodeBlock && line.startsWith('## ')) {
+            h2Headings.push(line.trim());
+        }
+    }
+
+    if (!isDelta) {
+        if (h2Headings.length < ORIGINAL_HEADINGS.length) {
+            reportError(`Missing mandatory H2 headings for original spec. Required: ${ORIGINAL_HEADINGS.join(', ')}`);
+        } else {
+            for (let i = 0; i < ORIGINAL_HEADINGS.length; i++) {
+                if (h2Headings[i] !== ORIGINAL_HEADINGS[i]) {
+                    reportError(`Heading #${i + 1} MUST be "${ORIGINAL_HEADINGS[i]}", found "${h2Headings[i] || 'None'}"`);
+                }
+            }
+        }
+    } else {
+        if (h2Headings.length < DELTA_HEADINGS.length) {
+            reportError(`Missing mandatory H2 headings for delta spec. Required: ${DELTA_HEADINGS.join(', ')}`);
+        } else {
+            for (let i = 0; i < DELTA_HEADINGS.length; i++) {
+                if (h2Headings[i] !== DELTA_HEADINGS[i]) {
+                    reportError(`Heading #${i + 1} MUST be "${DELTA_HEADINGS[i]}" (no intermediate wrappers), found "${h2Headings[i] || 'None'}"`);
+                }
+            }
+        }
+    }
+
+    return { hasErrors, errors };
+}
+
+function run() {
+    const rawTargets = process.argv.slice(2);
+    let targets = rawTargets.length > 0 ? rawTargets : ['specs'];
+    
+    const filesToLint = [];
+    for (const target of targets) {
+        filesToLint.push(...globSpecs(target));
+    }
+
+    if (filesToLint.length === 0) {
+        console.error(`No valid markdown specs found.`);
+        process.exit(1);
+    }
+    
+    const uniqueFiles = Array.from(new Set(filesToLint));
+
+    console.log(`Running markdownlint-cli on ${uniqueFiles.length} files...`);
+    const lintResult = spawnSync('npx', ['markdownlint', ...uniqueFiles, '-c', '.markdownlintrc'], { stdio: 'inherit' });
+    if (lintResult.status !== 0) {
+        console.error(`\n[ERROR] markdownlint failed.`);
+        process.exit(1);
+    }
+    
+    console.log(`Running semantic validation...`);
+    let totalErrors = 0;
+    
+    for (const file of uniqueFiles) {
+        const { hasErrors, errors } = lintFile(file);
+        if (hasErrors) {
+            console.error(`\n[FAIL] ${file}`);
+            for (const err of errors) {
+                console.error(`  - ${err}`);
+            }
+            totalErrors++;
+        }
+    }
+    
+    if (totalErrors > 0) {
+        console.error(`\nLinting failed: ${totalErrors} files contain errors.`);
+        process.exit(1);
+    }
+    
+    console.log(`\nLinting passed!`);
+}
+
+run();

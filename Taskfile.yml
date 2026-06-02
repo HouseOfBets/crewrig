@@ -232,6 +232,10 @@ tasks:
         msg: "markdownlint-cli is required. Install with: npm install -g markdownlint-cli"
     cmd: markdownlint "**/*.md" --ignore node_modules --ignore extension-skeleton
 
+  spec:lint:
+    desc: "Lint spec files for format compliance (markdown + custom semantic rules)"
+    cmd: node {{.REPO_DIR}}/scripts/lib/spec-linter.js {{.CLI_ARGS}}
+
   fix-markdown:
     desc: Auto-fix Markdown formatting issues
     preconditions:

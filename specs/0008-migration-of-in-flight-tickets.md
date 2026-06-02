@@ -88,7 +88,7 @@ under.
     current audit (this spec) classifies two tickets as
     `retrofit`, well within the cap.
 
-## Audit table
+### Audit table
 
 The following table is the normative audit of every issue open at
 the time of this spec's authoring (2026-06-01). Re-classification
