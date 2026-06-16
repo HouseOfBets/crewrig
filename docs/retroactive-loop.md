@@ -29,6 +29,32 @@ the *Class tagging discipline* section below; downstream skills
 (`developer`, `tester`, `spec-author` in delta mode) need only the
 *Routing matrix* row that names them.
 
+## REVIEW launch trigger
+
+The REVIEW stage begins the moment the implementation PR exists on the
+remote. The orchestrator SHALL:
+
+1. Apply the `iter:1` label to the implementation PR (per *Iteration
+   counter — GitHub label*).
+2. **Immediately** spawn the cold-start `pr-reviewer` with the PR
+   number — no pause, no prompt, no user acknowledgement requested.
+
+The spawn sequence is mode-conditional:
+
+| Mode | Action |
+|---|---|
+| **INTERMEDIATE** | Apply `iter:1` label; spawn `pr-reviewer` immediately. |
+| **MINIMAL** | Apply `iter:1` label; spawn `pr-reviewer` immediately. |
+| **AUTO** | Apply `iter:1` label; spawn `pr-reviewer` immediately. |
+| **FULL** | Post the non-blocking start-of-iteration notification on the logbook issue (per `AGENTS.md` → *Interaction modes*); apply `iter:1` label; spawn `pr-reviewer` immediately. The notification does NOT block spawning. |
+
+**Process violation.** Pausing after PR creation and waiting for user
+input before spawning the reviewer is a process violation in
+INTERMEDIATE, MINIMAL, and AUTO modes. The REVIEW loop in those modes
+is fully autonomous from the moment the PR exists — no user gate fires
+until the max-iteration guardrail (see *Max-iteration guardrail*) or the
+final merge-authorization request.
+
 ## Routing matrix
 
 The matrix below is the engine's authoritative reference. It is also
@@ -146,11 +172,12 @@ cross-session-safe by virtue of being a GitHub primitive — two
 sibling orchestrators racing the same PR converge on the same label
 state without coordinating through MemPalace.
 
-**Initial label.** The first REVIEW pass on a freshly opened PR
-implies `iter:1`; the engine SHALL apply the `iter:1` label at the
-moment the first verdict is consumed, not at PR open time. PRs that
-never need a second pass therefore carry exactly one `iter:N` label
-on merge — a useful searchable signal for ticket-difficulty
+**Initial label.** The `iter:1` label SHALL be applied to the PR
+**before** the first reviewer is spawned — between PR creation and
+reviewer launch, not after the first verdict is consumed (see
+*REVIEW launch trigger* for the exact step ordering). PRs that never
+need a second pass therefore carry exactly one `iter:N` label on
+merge — a useful searchable signal for ticket-difficulty
 retrospectives.
 
 ## Termination
