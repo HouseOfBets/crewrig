@@ -17,4 +17,4 @@
 # See artifacts/FORMAT.md (Provenance Block) and issue #41 for context.
 
 canonical_repo = "https://github.com/crewrig/crewrig"
-feedback_repo  = "https://github.com/crewrig/crewrig"
+feedback_repo  = "https://github.com/HouseOfBets/crewrig"
